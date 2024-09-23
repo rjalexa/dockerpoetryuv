@@ -1,3 +1,4 @@
+# Stage 1: Base image with Python and system dependencies
 FROM python:3.11.10-bullseye AS python-base
 
 # Set environment variables
@@ -15,8 +16,6 @@ ENV PYTHONUNBUFFERED=1 \
 # Add Poetry and venv to the PATH
 ENV PATH="$POETRY_HOME/bin:$VENV_PATH/bin:$PATH"
 
-FROM python-base AS production
-
 # Install system dependencies
 RUN buildDeps="build-essential" \
     && apt-get update \
@@ -27,12 +26,12 @@ RUN buildDeps="build-essential" \
     && apt-get install -y --no-install-recommends $buildDeps \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up non-root user
-RUN groupadd -r isagog && useradd -r -g isagog isagog
+# Stage 2: Install Poetry and dependencies
+FROM python-base AS builder
 
 # Set Poetry and uv versions
 ENV POETRY_VERSION=1.8.3
-ENV UV_VERSION=0.4.15
+ENV UV_VERSION=0.2.17
 
 # Install Poetry and uv
 RUN curl -sSL https://install.python-poetry.org | python3 - && chmod a+x /opt/poetry/bin/poetry
@@ -51,14 +50,28 @@ RUN python -m venv $VENV_PATH \
     && poetry export -f requirements.txt --output requirements.txt \
     && uv pip install -r requirements.txt
 
+# Stage 3: Final production image
+FROM python-base AS production
+
+# Copy virtual environment from builder stage
+COPY --from=builder $VENV_PATH $VENV_PATH
+
+# Set working directory
+WORKDIR $PROJECT_DIR
+
 # Copy the rest of the application
 COPY app/main.py .
 
+# Set up non-root user
+RUN groupadd -r isagog && useradd -r -g isagog isagog
+
 # Change ownership of the app directory to isagog
-RUN chown -R isagog:isagog /app
+RUN chown -R isagog:isagog $PROJECT_DIR
 
 EXPOSE 8000
 
 # Switch to non-root user
 USER isagog
 
+# Set the entrypoint to activate the virtual environment
+ENTRYPOINT ["/bin/bash", "-c", "source $VENV_PATH/bin/activate && exec $0 $@"]
